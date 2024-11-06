@@ -1,13 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WebGPU WebXR Demo</title>
+    <title>Three.js WebGPU XR Cube Demo</title>
     <style>
-        canvas {
-            width: 100vw;
-            height: 100vh;
-            display: block;
-        }
+        body { margin: 0; }
+        canvas { display: block; }
         #xr-button {
             position: absolute;
             bottom: 20px;
@@ -16,7 +13,7 @@
             padding: 12px 24px;
             border: none;
             border-radius: 6px;
-            background: #4CAF50;
+            background: black;
             color: white;
             font-size: 16px;
             cursor: pointer;
@@ -28,181 +25,131 @@
     </style>
 </head>
 <body>
-    <canvas></canvas>
     <button id="xr-button" disabled>Enter VR</button>
-    <script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { WebGPURenderer } from 'three/addons/renderers/webgpu/WebGPURenderer.js';
+
+        let camera, scene, renderer, cube;
+
         async function init() {
             if (!navigator.gpu) {
                 alert('WebGPU not supported');
                 return;
             }
 
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) {
-                alert('Couldn\'t request WebGPU adapter');
-                return;
-            }
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 
-            const device = await adapter.requestDevice();
-            const canvas = document.querySelector('canvas');
-            const context = canvas.getContext('webgpu');
+            try {
+                // Create WebGPU renderer
+                renderer = new WebGPURenderer();
+                const adapter = await navigator.gpu.requestAdapter();
+                const device = await adapter.requestDevice();
+                await renderer.init(); // Initialize WebGPU context
+                
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                document.body.appendChild(renderer.domElement);
 
-            const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-            context.configure({
-                device,
-                format: canvasFormat,
-                alphaMode: 'premultiplied',
-            });
+                // Create a blue cube
+                const geometry = new THREE.BoxGeometry(1, 1, 1);
+                const material = new THREE.MeshPhongMaterial({ color: 0x0088ff });
+                cube = new THREE.Mesh(geometry, material);
+                scene.add(cube);
 
-            // Create vertex buffer
-            const vertices = new Float32Array([
-                 0.0,  0.5, 0.0, // position
-                -0.5, -0.5, 0.0,
-                 0.5, -0.5, 0.0,
-            ]);
+                // Add lights
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(5, 5, 5);
+                scene.add(directionalLight);
 
-            const vertexBuffer = device.createBuffer({
-                size: vertices.byteLength,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
-            device.queue.writeBuffer(vertexBuffer, 0, vertices);
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
 
-            const vertexBufferLayout = {
-                arrayStride: 12, // 3 floats * 4 bytes
-                attributes: [{
-                    format: 'float32x3',
-                    offset: 0,
-                    shaderLocation: 0,
-                }],
-            };
-
-            // Create shader
-            const shaderModule = device.createShaderModule({
-                code: `
-                    struct VertexOutput {
-                        @builtin(position) position: vec4f,
-                        @location(0) color: vec4f,
-                    }
-
-                    @vertex
-                    fn vertexMain(
-                        @location(0) position: vec3f,
-                    ) -> VertexOutput {
-                        var output: VertexOutput;
-                        output.position = vec4f(position, 1.0);
-                        output.color = vec4f(1.0, 0.0, 0.0, 1.0);
-                        return output;
-                    }
-
-                    @fragment
-                    fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-                        return input.color;
-                    }
-                `
-            });
-
-            // Create render pipeline
-            const pipeline = device.createRenderPipeline({
-                layout: 'auto',
-                vertex: {
-                    module: shaderModule,
-                    entryPoint: 'vertexMain',
-                    buffers: [vertexBufferLayout],
-                },
-                fragment: {
-                    module: shaderModule,
-                    entryPoint: 'fragmentMain',
-                    targets: [{
-                        format: canvasFormat,
-                    }],
-                },
-                primitive: {
-                    topology: 'triangle-list',
-                },
-            });
-
-            // WebXR session setup
-            const xrButton = document.querySelector('#xr-button');
-            
-            if ('xr' in navigator) {
-                const sessionInit = {
-                    requiredFeatures: ['local'],
-                };
-
-                navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
-                    xrButton.disabled = !supported;
+                // Position camera and add ground
+                camera.position.z = 3;
+                
+                // Add a ground plane
+                const groundGeometry = new THREE.PlaneGeometry(10, 10);
+                const groundMaterial = new THREE.MeshPhongMaterial({ 
+                    color: 0x999999,
+                    side: THREE.DoubleSide 
                 });
+                const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+                ground.rotation.x = -Math.PI / 2;
+                ground.position.y = -2;
+                scene.add(ground);
 
-                xrButton.addEventListener('click', async () => {
-                    try {
-                        const session = await navigator.xr.requestSession('immersive-vr', sessionInit);
-                        const xrLayer = new XRWebGPULayer(session, device);
-                        const xrRefSpace = await session.requestReferenceSpace('local');
+                // Set up WebXR
+                renderer.xr.enabled = true;
 
-                        await session.updateRenderState({
-                            baseLayer: xrLayer
+                const xrButton = document.getElementById('xr-button');
+
+                if (navigator.xr) {
+                    navigator.xr.isSessionSupported('immersive-vr')
+                        .then((supported) => {
+                            xrButton.disabled = !supported;
                         });
 
-                        function onXRFrame(time, frame) {
-                            const pose = frame.getViewerPose(xrRefSpace);
-                            
-                            if (pose) {
-                                const commandEncoder = device.createCommandEncoder();
-                                
-                                for (const view of pose.views) {
-                                    const renderPass = commandEncoder.beginRenderPass({
-                                        colorAttachments: [{
-                                            view: xrLayer.getViewTextureView(view),
-                                            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
-                                            loadOp: 'clear',
-                                            storeOp: 'store',
-                                        }],
-                                    });
+                    xrButton.addEventListener('click', onEnterVR);
+                } else {
+                    xrButton.textContent = 'WebXR Not Available';
+                }
 
-                                    renderPass.setPipeline(pipeline);
-                                    renderPass.setVertexBuffer(0, vertexBuffer);
-                                    renderPass.draw(3);
-                                    renderPass.end();
-                                }
+                // Handle window resizing
+                window.addEventListener('resize', onWindowResize, false);
 
-                                device.queue.submit([commandEncoder.finish()]);
-                            }
-
-                            session.requestAnimationFrame(onXRFrame);
-                        }
-
-                        session.requestAnimationFrame(onXRFrame);
-
-                    } catch (error) {
-                        console.error('Error entering VR:', error);
-                    }
-                });
+                // Start animation
+                animate();
+            } catch (error) {
+                console.error('Error initializing WebGPU:', error);
+                alert('Error initializing WebGPU. Check if your browser supports WebGPU and it is enabled.');
             }
-
-            // Regular rendering loop for non-VR
-            function render() {
-                const commandEncoder = device.createCommandEncoder();
-                const renderPass = commandEncoder.beginRenderPass({
-                    colorAttachments: [{
-                        view: context.getCurrentTexture().createView(),
-                        clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
-                        loadOp: 'clear',
-                        storeOp: 'store',
-                    }],
-                });
-
-                renderPass.setPipeline(pipeline);
-                renderPass.setVertexBuffer(0, vertexBuffer);
-                renderPass.draw(3);
-                renderPass.end();
-
-                device.queue.submit([commandEncoder.finish()]);
-                requestAnimationFrame(render);
-            }
-
-            requestAnimationFrame(render);
         }
 
+        function onEnterVR() {
+            navigator.xr.requestSession('immersive-vr', {
+                optionalFeatures: ['local-floor', 'bounded-floor']
+            }).then((session) => {
+                renderer.xr.setSession(session);
+                
+                session.addEventListener('end', () => {
+                    renderer.xr.setSession(null);
+                });
+
+                xrButton.textContent = 'Exit VR';
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
+
+        function render() {
+            // Rotate the cube
+            if (cube) {
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // Initialize immediately
         init();
     </script>
 </body>
